@@ -1,0 +1,78 @@
+version: "3.9"
+
+services:
+  # ChromaDB vector store
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: citation_chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+      - ANONYMIZED_TELEMETRY=False
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI backend
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: citation_backend
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./app:/app/app
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      - COLLECTION_NAME=citation_rag
+    depends_on:
+      chromadb:
+        condition: service_healthy
+
+  # Ingestion job (runs once, then exits)
+  ingest:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    container_name: citation_ingest
+    command: python -m app.ingestion.ingest
+    volumes:
+      - ./data:/app/data
+      - ./app:/app/app
+    environment:
+      - CHROMA_HOST=chromadb
+      - CHROMA_PORT=8000
+      - COLLECTION_NAME=citation_rag
+    depends_on:
+      chromadb:
+        condition: service_healthy
+    profiles:
+      - ingest
+
+  # Streamlit frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    container_name: citation_frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - BACKEND_URL=http://backend:8080
+    depends_on:
+      - backend
+
+volumes:
+  chroma_data:
